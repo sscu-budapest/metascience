@@ -1,0 +1,5 @@
+outs:
+- md5: c9058d0980179b4d8d23e7c75ccf781f.dir
+  size: 100983636
+  nfiles: 4951
+  path: raw-data
