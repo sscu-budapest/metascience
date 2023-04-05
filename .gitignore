@@ -167,3 +167,7 @@ Manifest.toml
 ### Custom
 dask-worker-space
 .vscode
+*.parquet
+raw-data
+ccl-old
+draft*.ipynb

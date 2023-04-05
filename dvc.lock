@@ -11,3 +11,39 @@ stages:
       md5: d68191f8e7914d63bb9197146e7c6f4a.dir
       size: 24892905
       nfiles: 3
+  complete-repec:
+    cmd: dz run-step repec complete
+    deps:
+    - path: src/repec/collect.py
+      md5: 9d69a5eff9505600cb1861448907739b
+      size: 2098
+    - path: src/repec/proc.py
+      md5: 4eee59fa68ba47baca0458c67add6064
+      size: 5380
+    params:
+      zimmer.yaml:
+        aswan_projects.repec-nep.current_leaf: 1a443e6f81ef0aeb3a9e
+    outs:
+    - path: data/metascience/repec/complete
+      md5: e7033cbdec8f7a6fc02275e6674d85d1.dir
+      size: 329297901
+      nfiles: 6
+  minimal-repec:
+    cmd: dz run-step repec minimal
+    deps:
+    - path: data/metascience/repec/complete
+      md5: e7033cbdec8f7a6fc02275e6674d85d1.dir
+      size: 329297901
+      nfiles: 6
+    - path: src/repec/proc.py
+      md5: 4eee59fa68ba47baca0458c67add6064
+      size: 5380
+    params:
+      zimmer.yaml:
+        envs.minimal.params.repec.abstract_chars: 150
+        envs.minimal.params.repec.min_papers_per_author: 3
+    outs:
+    - path: data/metascience/repec/minimal
+      md5: 8ee24beb8513d27201f95e7d95207369.dir
+      size: 103136319
+      nfiles: 6

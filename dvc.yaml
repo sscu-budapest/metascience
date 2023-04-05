@@ -6,3 +6,25 @@ stages:
     outs:
     - data/metascience/scimagojr/complete:
         persist: true
+  complete-repec:
+    cmd: dz run-step repec complete
+    deps:
+    - src/repec/collect.py
+    - src/repec/proc.py
+    params:
+    - zimmer.yaml:
+      - aswan_projects.repec-nep.current_leaf
+    outs:
+    - data/metascience/repec/complete:
+        persist: true
+  minimal-repec:
+    cmd: dz run-step repec minimal
+    deps:
+    - data/metascience/repec/complete
+    - src/repec/proc.py
+    params:
+    - zimmer.yaml:
+      - envs.minimal.params.repec.abstract_chars
+      - envs.minimal.params.repec.min_papers_per_author
+    outs:
+    - data/metascience/repec/minimal
