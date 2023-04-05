@@ -1,0 +1,13 @@
+schema: '2.0'
+stages:
+  complete-scimagojr:
+    cmd: dz run-step scimagojr complete
+    deps:
+    - path: src/scimagojr.py
+      md5: 056ed947d74423592023ea1e15f20a1e
+      size: 2204
+    outs:
+    - path: data/metascience/scimagojr/complete
+      md5: d68191f8e7914d63bb9197146e7c6f4a.dir
+      size: 24892905
+      nfiles: 3

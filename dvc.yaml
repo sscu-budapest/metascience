@@ -1,0 +1,8 @@
+stages:
+  complete-scimagojr:
+    cmd: dz run-step scimagojr complete
+    deps:
+    - src/scimagojr.py
+    outs:
+    - data/metascience/scimagojr/complete:
+        persist: true
