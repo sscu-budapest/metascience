@@ -1,5 +1,6 @@
 name: metascience
 version: v0.1
+cron: 0 8 * * 2
 envs:
   complete: {}
   minimal:
