@@ -23,7 +23,6 @@ class ArchiveHandler(aswan.RequestHandler):
     max_in_parallel = 30
 
     def parse(self, blob):
-
         soup = BeautifulSoup(blob, "xml")
 
         urls = []

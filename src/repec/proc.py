@@ -1,5 +1,4 @@
 import re
-from itertools import islice
 from multiprocessing import cpu_count
 
 import aswan
@@ -29,14 +28,12 @@ N_WORKERS = cpu_count() // 3 + 1
 
 @dz.register_data_loader(extra_deps=[RepecProject])
 def load():
-
     proj = RepecProject()
 
     for nep_out in proj.get_unprocessed_events(NepBase):
         nep_df = nep_out.content
+        nep_table.replace_records(nep_df)
         break
-
-    nep_table.replace_records(nep_df)
 
     cev_iter = proj.get_unprocessed_events(HistoryHandler)
 

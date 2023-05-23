@@ -8,7 +8,6 @@ url_base = dz.SourceUrl("https://www.scimagojr.com/journalrank.php")
 
 
 class Journal(dz.AbstractEntity):
-
     sourceid = dz.Index & int
 
     title = str
@@ -21,7 +20,6 @@ class Journal(dz.AbstractEntity):
 
 
 class JournalRecord(dz.AbstractEntity):
-
     journal = dz.Index & Journal
     year = dz.Index & int
 
@@ -39,7 +37,6 @@ class JournalRecord(dz.AbstractEntity):
 
 
 class JournalArea(dz.AbstractEntity):
-
     journal = Journal
     area = str
 
@@ -51,7 +48,6 @@ area_table = dz.ScruTable(JournalArea)
 
 @dz.register_data_loader
 def proc():
-
     start_year = 1999
     end_year = 2021
 
