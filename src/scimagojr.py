@@ -80,7 +80,7 @@ def proc():
     )
 
 
-def get_complete_area_pivot():
+def get_complete_area_pivot() -> pd.DataFrame:
     return (
         journal_table.get_full_df("complete")[Journal.issn]
         .str.split(", ")
