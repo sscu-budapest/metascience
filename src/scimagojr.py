@@ -80,6 +80,31 @@ def proc():
     )
 
 
+def get_complete_area_pivot():
+    return (
+        journal_table.get_full_df("complete")[Journal.issn]
+        .str.split(", ")
+        .explode()
+        .loc[lambda s: s.str.len() == 8]
+        .apply(lambda s: f"{s[:4]}-{s[4:]}")
+        .reset_index()
+        .merge(
+            area_table.get_full_df("complete"),
+            left_on=Journal.sourceid,
+            right_on=JournalArea.journal.sourceid,
+        )
+        .dropna(subset=JournalArea.area)
+        .pivot_table(
+            index=Journal.issn,
+            columns=JournalArea.area,
+            values=Journal.sourceid,
+            aggfunc="count",
+        )
+        .fillna(0)
+        .drop("nan", axis=1, errors="ignore")
+    )
+
+
 def _f2str(s):
     return s.str.replace(",", ".").astype(float)
 
