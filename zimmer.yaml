@@ -10,4 +10,4 @@ envs:
         min_papers_per_author: 3
 aswan_projects:
   repec-nep:
-    current_leaf: 4d065b862e3de50293da
+    current_leaf: 49223906e1d48b73ea55
