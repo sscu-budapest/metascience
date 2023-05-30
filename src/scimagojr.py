@@ -1,3 +1,4 @@
+import datetime as dt
 import re
 from functools import partial
 
@@ -80,14 +81,20 @@ def proc():
     )
 
 
-def get_complete_area_pivot() -> pd.DataFrame:
+def get_issn_joiner() -> pd.DataFrame:
     return (
         journal_table.get_full_df("complete")[Journal.issn]
         .str.split(", ")
         .explode()
-        .loc[lambda s: s.str.len() == 8]
+        .loc[lambda s: s != "-"]
         .apply(lambda s: f"{s[:4]}-{s[4:]}")
         .reset_index()
+    )
+
+
+def get_complete_area_pivot() -> pd.DataFrame:
+    return (
+        get_issn_joiner()
         .merge(
             area_table.get_full_df("complete"),
             left_on=Journal.sourceid,
@@ -102,6 +109,27 @@ def get_complete_area_pivot() -> pd.DataFrame:
         )
         .fillna(0)
         .drop("nan", axis=1, errors="ignore")
+    )
+
+
+def get_best_q_by_year() -> pd.DataFrame:
+    return (
+        journal_record_table.get_full_df("complete")[JournalRecord.sjr_best_quartile]
+        .loc[lambda s: s != "-"]
+        .reset_index()
+        .pivot_table(
+            index=JournalRecord.journal.sourceid,
+            columns=JournalRecord.year,
+            values=JournalRecord.sjr_best_quartile,
+            aggfunc="first",
+        )
+        .reindex(range(1950, dt.date.today().year + 1), axis=1)
+        .fillna(method="ffill", axis=1)
+        .fillna(method="bfill", axis=1)
+        .merge(get_issn_joiner(), left_index=True, right_on=Journal.sourceid)
+        .drop(Journal.sourceid, axis=1)
+        .melt(id_vars=[Journal.issn])
+        .rename(columns={"variable": "year", "value": "best_q"})
     )
 
 

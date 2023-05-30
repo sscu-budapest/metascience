@@ -14,9 +14,7 @@ from typing import Iterable
 from partcsv import partition_dicts
 from tqdm import tqdm
 
-from .constants import PARTITIONED_CSV_PATH, SNAPSHOT_PATH
-
-N_GROUPS = 128
+from .constants import N_GROUPS, PARTITIONED_CSV_PATH, SNAPSHOT_PATH
 
 
 @dataclass
@@ -468,19 +466,16 @@ class WorksWriter(PWriter):
             self.open_access.writerow(open_access)
 
         # referenced_works
-        for referenced_work in dic.get("referenced_works"):
+        for referenced_work in dic.get("referenced_works", []):
             if referenced_work:
                 self.referenced_works.writerow(
-                    {
-                        "work_id": work_id,
-                        "referenced_work_id": referenced_work,
-                    }
+                    {"work_id": work_id, "referenced_work_id": referenced_work}
                 )
 
         # related_works
-        for related_work in dic.get("related_works"):
+        for related_work in dic.get("related_works", []):
             if related_work:
-                self.referenced_works.writerow(
+                self.related_works.writerow(
                     {"work_id": work_id, "related_work_id": related_work}
                 )
 
