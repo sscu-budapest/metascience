@@ -26,7 +26,9 @@ class MWriter:
     def init(self, parent_dir: Path, sub_name: str, partition: str):
         path = parent_dir / partition / f"{sub_name}.csv"
         path.parent.mkdir(exist_ok=True, parents=True)
-        self._file = open(parent_dir / partition / f"{sub_name}.csv", "wt")
+        self._file = gzip.open(
+            parent_dir / partition / f"{sub_name}.csv.gz", "wt", encoding="utf-8"
+        )
         self._writer = csv.DictWriter(
             self._file, fieldnames=self.cols, extrasaction="ignore"
         )
