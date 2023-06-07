@@ -508,35 +508,11 @@ def flatten_minors():
 
 
 def flatten_authors():
-    out_p = PARTITIONED_CSV_PATH / "authors"
-
-    partition_dicts(
-        tqdm(file_iter("authors")),
-        partition_key="id",
-        num_partitions=N_GROUPS,
-        director_count=20,
-        parent_dir=out_p,
-        slot_per_partition=8_000,
-        batch_size=2000,
-        writer_function=partial(meta_partition_writer, kls=AuthorsWriter),
-        main_queue_filler=para_queue_filler,
-    )
+    big_run("authors", AuthorsWriter)
 
 
 def flatten_works():
-    out_p = PARTITIONED_CSV_PATH / "works"
-
-    partition_dicts(
-        tqdm(file_iter("works")),
-        partition_key="id",
-        num_partitions=N_GROUPS,
-        director_count=30,
-        parent_dir=out_p,
-        slot_per_partition=8_000,
-        batch_size=2000,
-        writer_function=partial(meta_partition_writer, kls=WorksWriter),
-        main_queue_filler=para_queue_filler,
-    )
+    big_run("work", WorksWriter)
 
 
 POISON_PILL = None
@@ -555,7 +531,7 @@ def meta_partition_writer(
 
 def para_queue_filler(it: Iterable, main_queue: mp.Queue, batch_size: int):
     proces = []
-    open_files = mp.Queue(maxsize=5)
+    open_files = mp.Queue(maxsize=4)
     for filename in it:
         open_files.put(1)
         p = mp.Process(
@@ -581,6 +557,20 @@ def single_uid_run(k, kls):
     with kls("", PARTITIONED_CSV_PATH / k) as writer:
         for dic in tqdm(uiter(k)):
             writer.write(dic)
+
+
+def big_run(key: str, kls: type):
+    partition_dicts(
+        tqdm(file_iter(key)),
+        partition_key="id",
+        num_partitions=N_GROUPS,
+        director_count=10,
+        parent_dir=PARTITIONED_CSV_PATH / key,
+        slot_per_partition=4_500,
+        batch_size=1500,
+        writer_function=partial(meta_partition_writer, kls=kls),
+        main_queue_filler=para_queue_filler,
+    )
 
 
 def file_iter(k):
