@@ -92,7 +92,7 @@ def get_issn_joiner() -> pd.DataFrame:
     )
 
 
-def get_complete_area_pivot() -> pd.DataFrame:
+def get_issn_area_base():
     return (
         get_issn_joiner()
         .merge(
@@ -101,6 +101,13 @@ def get_complete_area_pivot() -> pd.DataFrame:
             right_on=JournalArea.journal.sourceid,
         )
         .dropna(subset=JournalArea.area)
+        .loc[lambda df: df[JournalArea.area] != "nan"]
+    )
+
+
+def get_complete_area_pivot() -> pd.DataFrame:
+    return (
+        get_issn_area_base()
         .pivot_table(
             index=Journal.issn,
             columns=JournalArea.area,
@@ -108,7 +115,6 @@ def get_complete_area_pivot() -> pd.DataFrame:
             aggfunc="count",
         )
         .fillna(0)
-        .drop("nan", axis=1, errors="ignore")
     )
 
 

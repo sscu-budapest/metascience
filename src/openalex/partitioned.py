@@ -1,13 +1,15 @@
 import json
 from dataclasses import dataclass
+from hashlib import md5
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-from parquetranger import HashPartitioner, TableRepo
+import polars as pl
+from shackleton import TableShack
 
-from ..scimagojr import get_best_q_by_year, get_complete_area_pivot
+from ..scimagojr import get_best_q_by_year, get_issn_area_base
 from .constants import N_GROUPS, PARQUET_BLOB_ROOT, PARTITIONED_CSV_PATH
+from .mappers import author_position_mapper, journal_area_mapper, work_type_mapper
 
 INST_GROUPS = 16
 
@@ -18,42 +20,52 @@ cid = "concept_id"
 aid = "author_id"
 idc = "id"
 
-ind_hasher = HashPartitioner(num_groups=N_GROUPS)
+idg = "id_group"
+w_idg = "work_id_group"
 
-w_hasher = HashPartitioner(wid, N_GROUPS)
-i_hasher = HashPartitioner(iid, INST_GROUPS)
-a_hasher = HashPartitioner(aid, N_GROUPS)
+refid = f"referenced_{wid}"
+citeid = f"citing_{wid}"
+puby = "publication_year"
+ccount = "cited_by_count"
 
-authorship_by_inst = TableRepo(
-    PARQUET_BLOB_ROOT / "authorship-by-institution", group_cols=i_hasher
+
+def get_shack(name, id_col=None, **kwargs):
+    return TableShack(
+        PARQUET_BLOB_ROOT / name,
+        ipc=True,
+        compression="uncompressed",
+        id_col=id_col,
+        **kwargs,
+    )
+
+
+def get_parted_shack(name, id_col):
+    return get_shack(name, id_col, partition_cols=[idg])
+
+
+authorship_by_inst = get_parted_shack("authorship-by-institution", id_col=iid)
+authorship_by_author = get_parted_shack("authorship-by-author", id_col=aid)
+authorship_by_work = get_parted_shack("authorship-by-work", id_col=wid)
+authorship_with_institution_by_work = get_parted_shack(
+    "authorship-w-inst-by-work", id_col=wid
 )
-authorship_by_author = TableRepo(
-    PARQUET_BLOB_ROOT / "authorship-by-author", group_cols=a_hasher
-)
-
-authorship_by_work = TableRepo(
-    PARQUET_BLOB_ROOT / "authorship-by-work", group_cols=w_hasher
-)
 
 
-work_basics = TableRepo(PARQUET_BLOB_ROOT / "work-stats", group_cols=ind_hasher)
-work_concepts = TableRepo(PARQUET_BLOB_ROOT / "work-concepts", group_cols=ind_hasher)
-work_categories = TableRepo(
-    PARQUET_BLOB_ROOT / "work-categories", group_cols=ind_hasher
-)
+work_basics, work_concepts, work_areas, work_unstacked_concepts = [
+    get_parted_shack(f"work-{k}", id_col=idc)
+    for k in ["basics", "concepts", "areas", "unstacked-concepts"]
+]
 
-work_impacts = TableRepo(PARQUET_BLOB_ROOT / "work-impact", group_cols=w_hasher)
-work_impacted = TableRepo(PARQUET_BLOB_ROOT / "work-impacted", group_cols=w_hasher)
-
+work_impacts = get_parted_shack("work-impact", id_col=wid)
+work_impacted = get_parted_shack("work-impacted", id_col=wid)
 
 # citation_by_author = ...
 # citation_by_institution = ...
 
-important_works = TableRepo(PARQUET_BLOB_ROOT / "important-works")  # 500+ seems good
-
-journal_categories = TableRepo(PARQUET_BLOB_ROOT / "journal-categories")
-journal_qs = TableRepo(PARQUET_BLOB_ROOT / "journal-qs")
-root_mapper_table = TableRepo(PARQUET_BLOB_ROOT / "concept-root-mapper")
+important_works = get_shack("important-works")  # 500+ seems good
+journal_areas = get_shack("journal-areas", id_col=idc)
+journal_qs = get_shack("journal-qs", id_col=idc)
+root_mapper_table = get_shack("concept-root-mapper", id_col=cid)
 
 conc_cutoff = 0.65
 cited_levels = {
@@ -67,35 +79,42 @@ cited_levels = {
     10_000: "generational",
 }
 
-work_type_mapper = {
-    "journal-article": 1,
-    "book-chapter": 2,
-    "proceedings-article": 3,
-    "dissertation": 4,
-    "posted-content": 5,
-    "book": 6,
-    "dataset": 7,
-    "journal-issue": 8,
-    "report": 9,
-    "other": 10,
-    "reference-entry": 11,
-    "monograph": 12,
-    "reference-book": 13,
-    "peer-review": 14,
-    "component": 15,
-    "standard": 16,
-    "proceedings": 17,
-    "journal": 18,
-    "report-series": 19,
-    "book-part": 20,
-    "grant": 21,
-    "journal-volume": 22,
-    "book-series": 23,
-    "proceedings-series": 24,
-    "book-set": 25,
-}
 
-author_position_mapper = {"middle": 0, "first": 1, "last": 2}
+def old_hash_group(c, n=N_GROUPS):
+    # this is based on full (non-clean) id which is stupid
+    return (
+        pl.col(c)
+        .cast(pl.Binary)
+        .apply(lambda e: int(md5(e).hexdigest(), base=16) % n)
+        .cast(pl.UInt8)
+        .alias(idg)
+    )
+
+
+def hash_group(c, n=N_GROUPS):
+    return pl.col(c).hash().mod(n).alias(idg).cast(pl.UInt8)
+
+
+def add_hash_group(df: pl.DataFrame, c=idc, n=N_GROUPS):
+    return df.select([pl.all(), hash_group(c, n)])
+
+
+def clean_id(col: pl.Expr):
+    return col.str.slice(22, None).cast(pl.Int64)
+
+
+def clean_k(k: str = idc):
+    return clean_id(pl.col(k))
+
+
+def piv_pref(df: pl.DataFrame, col, ind=wid, ind_as=idc):
+    return (
+        df.select([pl.all(), pl.lit(True).alias("__isthat")])
+        .pivot(index=ind, columns=col, values="__isthat", aggregate_function="first")
+        .fill_null(False)
+        .rename({ind: ind_as})
+        .pipe(lambda _df: _df.select(sorted(_df.columns)))
+    )
 
 
 @dataclass
@@ -137,13 +156,11 @@ class WorkPartition:
         return self.pdir.name
 
     def _get(self, n):
-        return pd.read_csv(self.pdir / f"{n}.csv")
+        return pl.read_csv(self.pdir / f"{n}.csv.gz", low_memory=False)
 
 
 def _load_non_parted(k):
-    return pd.read_csv(
-        PARTITIONED_CSV_PATH / k / f"{k}.csv", low_memory=False
-    ).set_index("id")
+    return pl.read_csv(PARTITIONED_CSV_PATH / k / f"{k}.csv.gz", low_memory=False)
 
 
 def load_sources():
@@ -158,164 +175,158 @@ def load_concepts():
     return _load_non_parted("concepts")
 
 
-def clean_id(s):
-    return s.str.replace("https://openalex.org/", "").str[1:].astype(np.uint64)
-
-
 def dump_oal_source_extension():
-    sodf = load_sources()
+    sodf = load_sources().to_pandas().set_index(idc)
 
+    _isc = "issn"
     _issns = pd.concat(
         [
-            sodf["issn"].dropna().apply(json.loads).explode().reset_index(),
-            sodf["issn_l"].dropna().rename("issn").reset_index(),
+            sodf[_isc].dropna().apply(json.loads).explode().reset_index(),
+            sodf["issn_l"].dropna().rename(_isc).reset_index(),
         ]
     ).drop_duplicates()
 
     journal_qs.replace_all(
-        get_best_q_by_year()
-        .merge(_issns)
-        .drop("issn", axis=1)
-        .groupby([idc, "year"])
-        .min()
+        pl.from_pandas(get_best_q_by_year())
+        .select(
+            [
+                pl.col(_isc),
+                pl.col("year").cast(pl.UInt16),
+                pl.col("best_q").str.slice(1, None).cast(pl.UInt8),
+            ]
+        )
+        .join(pl.from_pandas(_issns).select([clean_k(), pl.col(_isc)]), on=_isc)
+        .drop(_isc)
     )
 
-    return journal_categories.replace_all(
-        get_complete_area_pivot()
-        .reset_index()
-        .merge(_issns)
-        .drop("issn", axis=1)
-        .groupby("id")
-        .max()
-        .astype(bool)
+    return journal_areas.replace_all(
+        pl.from_pandas(get_issn_area_base().merge(_issns)).select(
+            [clean_k(), pl.col("area").map_dict(journal_area_mapper).cast(pl.UInt8)]
+        )
     )
 
 
 def dump_root_mapper():
-    hier_df = pd.read_csv(
-        PARTITIONED_CSV_PATH / "concepts" / f"ancestors.csv", low_memory=False
+    hier_df = pl.read_csv(
+        PARTITIONED_CSV_PATH / "concepts" / "ancestors.csv.gz", low_memory=False
     )
 
     full_conc_df = load_concepts()
+    root_concepts = full_conc_df.filter(pl.col("level") <= 1)
 
-    root_concepts = full_conc_df.loc[lambda df: df["level"] <= 1]
-
+    ancid = "ancestor_id"
     root_mapper_table.replace_all(
-        hier_df.loc[lambda df: df["ancestor_id"].isin(root_concepts.index)]
+        hier_df.filter(pl.col(ancid).is_in(root_concepts[idc]))
         .pipe(
-            lambda df: pd.concat(
-                [df, pd.DataFrame(dict(zip(df.columns, [root_concepts.index] * 2)))],
-                ignore_index=True,
+            lambda df: pl.concat(
+                [df, pl.DataFrame(dict(zip(df.columns, [root_concepts["id"]] * 2)))]
             )
         )
-        .drop_duplicates()
+        .select([clean_k(cid), clean_k(ancid)])
+        .unique()
     )
+
+
+def dump_statics():
+    dump_oal_source_extension()
+    dump_root_mapper()
 
 
 def iter_workparts():
     return map(WorkPartition, (PARTITIONED_CSV_PATH / "works").iterdir())
 
 
-refid = f"referenced_{wid}"
-puby = "publication_year"
-ccount = "cited_by_count"
-base_work_cols = [puby]
-ext_work_cols = ["doi", "title", "mapped_type", ccount]
-
-
 def proc_wp_init(wp: WorkPartition):
-    wconc_df = wp.get_concepts().loc[lambda df: df["score"] >= conc_cutoff]
-    wloc_df = wp.get_locations()
+    dump_work_level(wp)
+    dump_ships(wp)
 
-    work_df = (
+
+def dump_work_level(wp: WorkPartition):
+    wloc_df = wp.get_locations().select([clean_k(wid), clean_k(sid)]).unique()
+
+    work_base = (
         wp.get_works()
-        .loc[lambda df: ~df["is_retracted"], :ccount]
-        .set_index(idc)
-        .dropna(subset=[puby])
-        .astype({puby: np.uint16, ccount: np.uint32})
-        .assign(
-            mapped_type=lambda df: df["type"]
-            .map(lambda e: work_type_mapper.get(e, 0))
-            .astype(np.uint8)
+        .filter(~pl.col("is_retracted") & pl.col(puby).is_not_null())
+        .select(
+            clean_k(idc),
+            pl.col(puby).cast(pl.UInt16),
+            pl.col(ccount).cast(pl.Int32),
+            pl.col("type").map_dict(work_type_mapper).cast(pl.UInt8).fill_null(0),
         )
-        .loc[:, base_work_cols + ext_work_cols]
+        .unique(subset=idc, keep="first")
+        .sort(idc)
+        .pipe(add_hash_group)
     )
 
-    q_by_work = (
-        wloc_df[[wid, sid]]
-        .merge(work_df[[puby]], left_on=wid, right_index=True)
-        .merge(
-            journal_qs.get_full_df().reset_index(),
-            left_on=[sid, puby],
-            right_on=[idc, "year"],
+    work_best_q = (
+        wloc_df.join(work_base, left_on=wid, right_on=idc, how="inner")
+        .join(
+            journal_qs.get_full_df(),
+            left_on=[puby, sid],
+            right_on=["year", idc],
+            how="inner",
         )
-        .groupby(wid)["best_q"]
-        .min()
-    )
-
-    work_basics.extend(
-        work_df.assign(
-            best_q=lambda df: q_by_work.reindex(df.index)
-            .fillna("Q5")
-            .str[1:]
-            .astype(np.uint8)
-        )
-    )
-
-    work_concepts.extend(
-        wconc_df.merge(root_mapper_table.get_full_df())
-        .loc[:, [wid, "ancestor_id"]]
-        .drop_duplicates()
-        .assign(b=True)
-        .pivot_table(index=wid, columns="ancestor_id", values="b", aggfunc="any")
-        .fillna(False)
-        .astype(bool)
-        .loc[lambda df: df.index.intersection(work_df.index), :]
-    )
-
-    work_categories.extend(
-        wloc_df.loc[:, [wid, sid]]
-        .merge(journal_categories.get_full_df(), left_on=sid, right_index=True)
-        .drop(sid, axis=1)
         .groupby(wid)
-        .max()
-        # .reindex(work_df.index)
-        .fillna(False)
-        .loc[lambda df: df.index.intersection(work_df.index), :]
-        # .assign(Uncategorized=lambda df: ~df.all(axis=1))
-        # .astype(bool)
+        .agg(pl.col("best_q").min())
+        .pipe(piv_pref, col="best_q")
+        .rename({str(c): f"Q{c}" for c in range(1, 5)})
     )
 
-    waff_df = (
+    work_basics.extend(work_base.join(work_best_q, on=idc, how="left").fill_null(False))
+
+    concept_base = (
+        wp.get_concepts()
+        .filter(pl.col("score") >= conc_cutoff)
+        .select([clean_k(wid), clean_k(cid)])
+        .join(root_mapper_table.get_full_df(), on=cid)
+        .select([wid, pl.col("ancestor_id").alias(cid)])
+        .unique()
+    )
+
+    work_concepts.extend(concept_base.pipe(piv_pref, col=cid).pipe(add_hash_group))
+    work_unstacked_concepts.extend(concept_base.rename({wid: idc}).pipe(add_hash_group))
+
+    work_areas.extend(
+        wloc_df.join(
+            journal_areas.get_full_df(), left_on=sid, right_on=idc, how="inner"
+        )
+        .pipe(piv_pref, col="area")
+        .pipe(add_hash_group)
+    )
+
+
+def dump_ships(wp: WorkPartition):
+    waff_base = (
         wp.get_authorships()
-        .loc[lambda df: df[wid].isin(work_df.index)]
-        .assign(
-            n_authors=lambda df: df.groupby(wid)[aid]
-            .transform("nunique")
-            .astype(np.uint16),
-            aff_rate=lambda df: df.groupby([wid, aid])["n_authors"]
-            .transform("count")
-            .astype(np.uint8),
-            mapped_position=lambda df: df["author_position"]
-            .replace(author_position_mapper)
-            .astype(np.uint8),
+        .select(
+            clean_k(aid),
+            clean_k(wid),
+            clean_k(iid),
+            pl.col(iid).n_unique().over([wid, aid]).alias("inst_count").cast(pl.UInt8),
+            pl.col(aid).n_unique().over(wid).alias("author_count").cast(pl.UInt16),
+            pl.col("author_position").map_dict(author_position_mapper).cast(pl.UInt8),
+        )
+        .unique()
+    )
+    inst_ship_base = waff_base.select([iid, wid]).drop_nulls().unique()
+
+    authorship_by_author.extend(waff_base.select([aid, wid, hash_group(aid)]).unique())
+    authorship_by_inst.extend(
+        inst_ship_base.select(
+            [pl.all(), hash_group(iid, INST_GROUPS), hash_group(wid).alias(w_idg)]
         )
     )
+    authorship_with_institution_by_work.extend(
+        inst_ship_base.pipe(add_hash_group, c=wid)
+    )
+    authorship_by_work.extend(waff_base.pipe(add_hash_group, c=wid))
 
-    authorship_by_author.extend(
-        waff_df.loc[:, [wid, aid, "mapped_position", "n_authors"]].drop_duplicates()
-    )
-
-    authorship_by_inst.extend(
-        waff_df.dropna(subset=iid)
-        .loc[:, [wid, iid, aid, "mapped_position", "n_authors", "aff_rate"]]
-        .drop_duplicates()
-    )
-    authorship_by_work.extend(
-        waff_df.fillna({iid: ""})
-        .loc[:, [wid, iid, aid, "mapped_position", "n_authors", "aff_rate"]]
-        .drop_duplicates()
-    )
+    ref_df = wp.get_referenced_works().unique().select([clean_k(wid), clean_k(refid)])
+    for shack, renamer in [
+        (work_impacts, {refid: wid, wid: citeid}),
+        (work_impacted, {}),
+    ]:
+        shack.extend(ref_df.rename(renamer).pipe(add_hash_group, c=wid))
 
 
 def proc_w_round2(wp: WorkPartition):
@@ -346,7 +357,7 @@ def summ_body(partition: str, merge_onto: pd.DataFrame, left_col=wid):
         left_on=left_col,
         right_index=True,
     )
-    cat_base = work_categories.get_partition_df(partition)
+    cat_base = work_areas.get_partition_df(partition)
     return (
         merge_onto.merge(work_basics.get_partition_df(partition)[[puby]], **m_kws)
         .merge(work_concepts.get_partition_df(partition), **m_kws)
