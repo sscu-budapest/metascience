@@ -419,9 +419,9 @@ class WorksWriter(PWriter):
             for authorship in authorships:
                 if author_id := authorship.get("author", {}).get("id"):
                     institutions = authorship.get("institutions")
-                    institution_ids = [i.get("id") for i in institutions]
-                    institution_ids = [i for i in institution_ids if i]
-                    institution_ids = institution_ids or [None]
+                    institution_ids = [
+                        i.get("id") for i in institutions if i.get("id")
+                    ] or [None]
 
                     for institution_id in institution_ids:
                         self.authorships.writerow(
@@ -555,7 +555,7 @@ def file_consumer(filename, main_queue, batch_size, open_files: mp.Queue):
 
 def single_uid_run(k, kls):
     with kls("", PARTITIONED_CSV_PATH / k) as writer:
-        for dic in tqdm(uiter(k)):
+        for dic in tqdm(unique_iter(k)):
             writer.write(dic)
 
 
@@ -597,7 +597,7 @@ def dic_iter(k):
             yield d
 
 
-def uiter(k):
+def unique_iter(k):
     seen_ids = set()
     for dic in dic_iter(k):
         _id = dic["id"]
