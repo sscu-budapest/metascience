@@ -512,7 +512,7 @@ def flatten_authors():
 
 
 def flatten_works():
-    big_run("work", WorksWriter)
+    big_run("works", WorksWriter)
 
 
 POISON_PILL = None
