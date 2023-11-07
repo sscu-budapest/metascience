@@ -1,5 +1,4 @@
 import datetime as dt
-import re
 from functools import partial
 
 import datazimmer as dz
@@ -42,18 +41,26 @@ class JournalArea(dz.AbstractEntity):
     area = str
 
 
+class JournalCategory(dz.AbstractEntity):
+    journal = Journal
+    year = int
+    category = str
+    q = float
+
+
 journal_table = dz.ScruTable(Journal)
 journal_record_table = dz.ScruTable(JournalRecord)
 area_table = dz.ScruTable(JournalArea)
+category_table = dz.ScruTable(JournalCategory)
 
 
 @dz.register_data_loader
 def proc():
     start_year = 1999
-    end_year = 2021
+    end_year = 2022
 
     df = pd.concat(
-        pd.read_csv(f"{url_base}?out=xls&year={y}", sep=";")
+        pd.read_csv(f"{url_base}?out=xls&year={y}", sep=";", low_memory=False)
         .assign(year=y)
         .rename(columns=partial(renamer, y=y))
         for y in range(start_year, end_year + 1)
@@ -72,12 +79,37 @@ def proc():
     area_table.replace_all(
         df.set_index(Journal.sourceid)["areas"]
         .rename(JournalArea.area)
-        .str.split(re.compile(",|; "))
+        .str.split("; ")
         .explode()
         .str.strip()
         .reset_index()
         .rename(columns={Journal.sourceid: JournalArea.journal.sourceid})
         .drop_duplicates()
+    )
+    category_table.replace_all(
+        df.set_index([Journal.sourceid, JournalRecord.year])[JournalRecord.categories]
+        .dropna()
+        .str.split("; ")
+        .explode()
+        .reset_index()
+        .assign(
+            q_base=lambda df: df.loc[:, JournalRecord.categories]
+            .str.extract(r"(\(Q\d\))")
+            .values[:, 0]
+        )
+        .assign(
+            **{
+                JournalCategory.category: lambda df: [
+                    r[JournalRecord.categories].replace(r["q_base"], "").strip()
+                    for _, r in df.fillna("").iterrows()
+                ],
+                JournalCategory.q: lambda df: df["q_base"]
+                .str.extract(r"Q(\d)")
+                .astype(float)
+                .values,
+            }
+        )
+        .rename(columns={Journal.sourceid: JournalCategory.journal.sourceid})
     )
 
 
@@ -92,7 +124,7 @@ def get_issn_joiner() -> pd.DataFrame:
     )
 
 
-def get_issn_area_base():
+def get_issn_area_base() -> pd.DataFrame:
     return (
         get_issn_joiner()
         .merge(
@@ -139,7 +171,7 @@ def get_best_q_by_year() -> pd.DataFrame:
     )
 
 
-def _f2str(s):
+def _f2str(s: pd.Series):
     return s.str.replace(",", ".").astype(float)
 
 
