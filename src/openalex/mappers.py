@@ -1,3 +1,63 @@
+from functools import cached_property
+
+import polars as pl
+
+from . import meta as oam
+from .constants import ID_MAP_ROOT
+
+k_col = "__key"
+v_col = oam.idc
+
+
+class IdMapper:
+    def __init__(self, name: str) -> None:
+        ID_MAP_ROOT.mkdir(parents=True, exist_ok=True)
+        self.fp = ID_MAP_ROOT / f"{name}.parquet"
+
+    def __call__(self, df: pl.DataFrame, col: str, can_miss=False):
+        out_df = df.pipe(_setup, self.map_df, col)
+        assert can_miss or (out_df.shape[0] == df.shape[0])
+        return out_df
+
+    def set_df(self, df: pl.DataFrame):
+        map_df = self.set_map(df[oam.idc].unique())
+        out_df = df.pipe(_setup, map_df)
+        assert out_df.shape[0] == df.shape[0]
+        return out_df
+
+    def set_map(self, ids):
+        old_map = self.map_df
+        ext_map = (
+            pl.DataFrame({k_col: ids})
+            .select(clean_id(k_col))
+            .filter(~pl.col(k_col).is_in(old_map[k_col]))
+            .with_row_count(name=v_col, offset=old_map.shape[0])
+            .select(k_col, v_col)
+        )
+        new_map = pl.concat([old_map, ext_map])
+        new_map.write_parquet(self.fp)
+        return new_map
+
+    @cached_property
+    def map_df(self) -> pl.DataFrame:
+        if self.fp.exists():
+            return pl.read_parquet(self.fp)
+        return pl.DataFrame([], schema={k_col: pl.Int64, v_col: pl.UInt32})
+
+
+def clean_id(col: str):
+    return pl.col(col).str.slice(22, None).cast(pl.Int64)
+
+
+def _setup(df: pl.DataFrame, map_df: pl.DataFrame, col: str = oam.idc) -> pl.DataFrame:
+    return (
+        df.rename({col: k_col})
+        .with_columns(clean_id(k_col))
+        .join(map_df.rename({v_col: col}), on=k_col)
+        .drop(k_col)
+    )
+
+
 work_type_mapper = {
     "journal-article": 1,
     "book-chapter": 2,
@@ -60,4 +120,15 @@ journal_area_mapper = {
     "Social Sciences": 29,
     "Toxicology and Pharmaceutics": 30,
     "Veterinary": 31,
+}
+
+inst_type_mapper = {
+    "government": 1,
+    "other": 2,
+    "archive": 3,
+    "nonprofit": 4,
+    "healthcare": 5,
+    "education": 6,
+    "facility": 7,
+    "company": 8,
 }
