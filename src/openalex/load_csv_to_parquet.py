@@ -16,15 +16,20 @@ SOURCE_K = "sources"
 CONC_K = "concepts"
 INST_K = "institutions"
 WORK_K = "works"
+AUTHOR_K = "authors"
 
 
 def load_country_df():
     url = "https://countries.trevorblades.com/"
     data = '{"query":"query { countries {name, code, continent {name}}}"}'
 
-    return pd.DataFrame(
-        requests.post(url, data=data).json()["data"]["countries"]
-    ).assign(continent=lambda df: df["continent"].apply(lambda d: d["name"]))
+    return (
+        pd.DataFrame(requests.post(url, data=data).json()["data"]["countries"])
+        .assign(continent=lambda df: df["continent"].apply(lambda d: d["name"]))
+        .sort_values(oam.Country.code)
+        .assign(id=lambda df: range(1, df.shape[0] + 1))
+        .rename(columns={"name": oam.Country.display_name})
+    )
 
 
 # def hash_group(c, n=N_GROUPS):
@@ -101,7 +106,7 @@ class WorkPartition:
         return self.pdir.name
 
     def _get(self, n):
-        return pl.read_csv(self.pdir / f"{n}.csv.gz", low_memory=False, n_rows=10)
+        return pl.read_csv(self.pdir / f"{n}.csv.gz", low_memory=False)
 
 
 def load_non_parted(k, sub=None):
@@ -122,23 +127,35 @@ def load_institutions():
     return _load_id_mapped(INST_K)
 
 
+def dump_authors():
+    for au_part_dir in tqdm((PARTITIONED_CSV_PATH / AUTHOR_K).iterdir(), AUTHOR_K):
+        oam.author_table.extend(
+            pl.read_csv(au_part_dir / f"{AUTHOR_K}.csv.gz")
+            .select(oam.idc, "orcid", oam.name_col)
+            .pipe(mappers.IdMapper(AUTHOR_K).set_df)
+            .pipe(add_limit_group)
+        )
+
+
 def load_institution_geo():
     return load_non_parted(INST_K, "geo")
 
 
 def dump_statics():
+    dump_authors()
+    oam.country_shack.replace_all(pl.from_pandas(load_country_df()))
     dump_oa_source_extension()
     dump_concepts()
     dump_institutions()
 
 
 def dump_work_statics():
-    for wp in tqdm(iter_workparts()):
+    for wp in tqdm(iter_workparts(), "work static"):
         dump_work_partition_statics(wp)
 
 
 def post_dump_work_extend():
-    for wp in tqdm(iter_workparts()):
+    for wp in tqdm(iter_workparts(), "work extend"):
         dump_work_relationships(wp)
 
 
@@ -210,9 +227,6 @@ def dump_concepts():
 
 
 def dump_institutions():
-    # country_df = pl.from_dataframe(
-    #    load_country_df().rename(columns={"code": oam.ccode})
-    # ).drop("name")
     country_df = oam.country_shack.get_full_df()
     oam.institution_table.replace_all(
         load_institutions()
@@ -270,6 +284,10 @@ def iter_workparts():
 
 
 def dump_work_partition_statics(wp: WorkPartition):
+    smap, cmap, imap, wmap, amap = map(
+        mappers.IdMapper, [SOURCE_K, CONC_K, INST_K, WORK_K, AUTHOR_K]
+    )
+
     work_base = (
         wp.get_works()
         .filter(
@@ -290,8 +308,9 @@ def dump_work_partition_statics(wp: WorkPartition):
         .sort(oam.idc)
         .pipe(add_limit_group)
     )
-    # sexp, cexp, iexp, wexp = _get_partial_exps([SOURCE_K, CONC_K, INST_K, WORK_K])
-    smap, cmap, imap, wmap = map(mappers.IdMapper, [SOURCE_K, CONC_K, INST_K, WORK_K])
+
+    def ext_wlim(df: pl.DataFrame, shack: oam.TableShack):
+        shack.extend(df.rename({oam.wid: oam.idc}).pipe(add_limit_group))
 
     wloc_df = (
         wp.get_locations()
@@ -300,10 +319,10 @@ def dump_work_partition_statics(wp: WorkPartition):
         .select(oam.sid, oam.wid)
         .unique()
     )
-    oam.work_sources.extend(wloc_df)
+    ext_wlim(wloc_df, oam.work_sources)
 
-    oam.work_dois.extend(
-        wp.get_ids().select(oam.wid, "doi").drop_nulls("doi").pipe(wmap, oam.wid)
+    wp.get_ids().select(oam.wid, "doi").drop_nulls("doi").pipe(wmap, oam.wid).pipe(
+        ext_wlim, oam.work_dois
     )
 
     work_best_q = (
@@ -351,16 +370,16 @@ def dump_work_partition_statics(wp: WorkPartition):
     # TODO: author things later
     waff_base = (
         wp.get_authorships()
-        .pipe(imap, oam.iid, can_miss=True)
-        .pipe(wmap, oam.wid)
+        .pipe(wmap, oam.wid, can_miss=True)
         .select(
             oam.wid,
             oam.iid,
+            oam.aid,
             pl.col(oam.iid)
             .n_unique()
             .over([oam.wid, oam.aid])
             .alias("inst_count")
-            .cast(pl.UInt8),
+            .cast(pl.UInt16),
             pl.col(oam.aid)
             .n_unique()
             .over(oam.wid)
@@ -369,8 +388,11 @@ def dump_work_partition_statics(wp: WorkPartition):
             pl.col("author_position")
             .map_dict(mappers.author_position_mapper)
             .cast(pl.UInt8),
+            pl.col("raw_affiliation_string"),
         )
         .unique()
+        .pipe(imap, oam.iid, can_miss=True)
+        .pipe(amap, oam.aid, can_miss=True, warn=True)
     )
     inst_ship_base = waff_base.select([oam.iid, oam.wid]).drop_nulls().unique()
 
@@ -384,7 +406,7 @@ def dump_work_partition_statics(wp: WorkPartition):
     oam.authorship_with_institution_by_work.extend(
         inst_ship_base.pipe(add_limit_group, c=oam.wid)
     )
-    # authorship_by_work.extend(waff_base.pipe(add_hash_group, c=wid))
+    oam.authorship_by_work.extend(waff_base.pipe(add_limit_group, c=oam.wid))
 
 
 def dump_work_relationships(wp: WorkPartition):

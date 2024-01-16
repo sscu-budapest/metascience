@@ -78,6 +78,7 @@ ancid = "ancestor_id"
 topc_id = "root_concept_code"
 subc_id = "child_concept_code"
 ccode = "country_code"
+name_col = "display_name"
 
 max_sub = 45
 
@@ -141,6 +142,7 @@ root_mapper_table = get_shack("concept-root-mapper", id_col=cid)
 institution_table = get_shack("institutions", id_col=idc)
 concepts_table = get_shack("concepts", id_col=idc)
 sources_table = get_shack("sources", id_col=idc)
+author_table = get_parted_shack("authors", id_col=idc)
 
 continent_shack = get_shack("continent")
 country_shack = get_shack("country")

@@ -74,7 +74,7 @@ class AuthorsWriter(PWriter):
             "works_count",
             "cited_by_count",
             "last_known_institution",
-            "works_api_url",
+            # "works_api_url",
             "updated_date",
         ]
     )
@@ -117,7 +117,7 @@ class ConceptsWriter(PWriter):
             "cited_by_count",
             "image_url",
             "image_thumbnail_url",
-            "works_api_url",
+            # "works_api_url",
             "updated_date",
         ]
     )
@@ -193,7 +193,7 @@ class InstitutionsWriter(PWriter):
             "display_name_alternatives",
             "works_count",
             "cited_by_count",
-            "works_api_url",
+            # "works_api_url",
             "updated_date",
         ]
     )
@@ -273,7 +273,7 @@ class PublishersWriter(PWriter):
             "parent_publisher",
             "works_count",
             "cited_by_count",
-            "sources_api_url",
+            # "sources_api_url",
             "updated_date",
         ]
     )
@@ -311,7 +311,7 @@ class SourcesWriter(PWriter):
             "is_oa",
             "is_in_doaj",
             "homepage_url",
-            "works_api_url",
+            # "works_api_url",
             "updated_date",
         ]
     )
@@ -349,8 +349,8 @@ class WorksWriter(PWriter):
             "cited_by_count",
             "is_retracted",
             "is_paratext",
-            "cited_by_api_url",
-            "abstract_inverted_index",
+            # "cited_by_api_url",
+            # "abstract_inverted_index",
         ]
     )
     locations = MWriter(
@@ -519,7 +519,13 @@ POISON_PILL = None
 
 
 def meta_partition_writer(
-    partition_name, parent_dir, queue: mp.Queue, mode: str = "wt", kls=WorksWriter
+    partition_name,
+    parent_dir,
+    queue: mp.Queue,
+    append: bool,
+    batch_size: int,
+    force_keys: list | None,
+    kls=WorksWriter,
 ):
     with kls(partition_name, parent_dir) as writer:
         while True:
@@ -555,21 +561,22 @@ def file_consumer(filename, main_queue, batch_size, open_files: mp.Queue):
 
 def single_uid_run(k, kls):
     with kls("", PARTITIONED_CSV_PATH / k) as writer:
-        for dic in tqdm(unique_iter(k)):
+        for dic in tqdm(unique_iter(k), desc=k):
             writer.write(dic)
 
 
 def big_run(key: str, kls: type):
     partition_dicts(
-        tqdm(file_iter(key)),
+        tqdm(dic_iter(key), desc=key),
+        # tqdm(file_iter(key)),
         partition_key="id",
         num_partitions=N_GROUPS,
-        director_count=10,
+        director_count=20,
         parent_dir=PARTITIONED_CSV_PATH / key,
-        slot_per_partition=4_500,
-        batch_size=1500,
+        slot_per_partition=1_500,
+        batch_size=500,
         writer_function=partial(meta_partition_writer, kls=kls),
-        main_queue_filler=para_queue_filler,
+        # main_queue_filler=para_queue_filler,
     )
 
 

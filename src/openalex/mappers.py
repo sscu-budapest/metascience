@@ -5,23 +5,32 @@ import polars as pl
 from . import meta as oam
 from .constants import ID_MAP_ROOT
 
+ID_PREFIX = "https://openalex.org/"
+
 k_col = "__key"
 v_col = oam.idc
+NULL_IND_VAL = 0
 
 
 class IdMapper:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, allow_nulls=True) -> None:
         ID_MAP_ROOT.mkdir(parents=True, exist_ok=True)
         self.fp = ID_MAP_ROOT / f"{name}.parquet"
+        self.allow_nulls = allow_nulls
 
-    def __call__(self, df: pl.DataFrame, col: str, can_miss=False):
+    def __call__(
+        self, df: pl.DataFrame, col: str = oam.idc, can_miss=False, warn=False
+    ):
         out_df = df.pipe(_setup, self.map_df, col)
-        assert can_miss or (out_df.shape[0] == df.shape[0])
+        mism = out_df.shape[0] != df.shape[0]
+        if warn and mism:
+            print(f"missed {self.fp.name}: {out_df.shape[0]} vs {df.shape[0]}")
+        assert can_miss or (not mism)
         return out_df
 
-    def set_df(self, df: pl.DataFrame):
-        map_df = self.set_map(df[oam.idc].unique())
-        out_df = df.pipe(_setup, map_df)
+    def set_df(self, df: pl.DataFrame, col=oam.idc):
+        map_df = self.set_map(df[col].unique())
+        out_df = df.pipe(_setup, map_df, col)
         assert out_df.shape[0] == df.shape[0]
         return out_df
 
@@ -42,16 +51,18 @@ class IdMapper:
     def map_df(self) -> pl.DataFrame:
         if self.fp.exists():
             return pl.read_parquet(self.fp)
-        return pl.DataFrame([], schema={k_col: pl.Int64, v_col: pl.UInt32})
+        initer = {k_col: None, v_col: NULL_IND_VAL} if self.allow_nulls else []
+        return pl.DataFrame(initer, schema={k_col: pl.Int64, v_col: pl.UInt32})
 
 
 def clean_id(col: str):
-    return pl.col(col).str.slice(22, None).cast(pl.Int64)
+    return pl.col(col).str.slice(len(ID_PREFIX) + 1, None).cast(pl.Int64)
 
 
 def _setup(df: pl.DataFrame, map_df: pl.DataFrame, col: str = oam.idc) -> pl.DataFrame:
     return (
         df.rename({col: k_col})
+        .filter(pl.col(k_col).str.starts_with(ID_PREFIX))
         .with_columns(clean_id(k_col))
         .join(map_df.rename({v_col: col}), on=k_col)
         .drop(k_col)
