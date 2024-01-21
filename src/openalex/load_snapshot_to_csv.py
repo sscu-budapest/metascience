@@ -6,7 +6,7 @@ import multiprocessing as mp
 import os
 from dataclasses import dataclass, field
 from functools import partial
-from io import FileIO
+from io import TextIOWrapper
 from itertools import islice
 from pathlib import Path
 from typing import Iterable
@@ -20,15 +20,14 @@ from .constants import N_GROUPS, PARTITIONED_CSV_PATH, SNAPSHOT_PATH
 @dataclass
 class MWriter:
     cols: list
-    _file: FileIO = field(init=False, default=None)
-    _writer: csv.DictWriter = field(init=False, default=None)
+    _file: TextIOWrapper = field(init=False)
+    _writer: csv.DictWriter = field(init=False)
 
     def init(self, parent_dir: Path, sub_name: str, partition: str):
-        path = parent_dir / partition / f"{sub_name}.csv"
-        path.parent.mkdir(exist_ok=True, parents=True)
-        self._file = gzip.open(
-            parent_dir / partition / f"{sub_name}.csv.gz", "wt", encoding="utf-8"
-        )
+        partition_dir = parent_dir / partition  
+        partition_dir.mkdir(exist_ok=True, parents=True)
+        path = partition_dir / f"{sub_name}.csv.gz"
+        self._file = gzip.open(path, "wt", encoding="utf-8")
         self._writer = csv.DictWriter(
             self._file, fieldnames=self.cols, extrasaction="ignore"
         )
@@ -37,7 +36,9 @@ class MWriter:
     def close(self):
         self._file.close()
 
-    def writerow(self, d: dict):
+    def writerow(self, d: dict, jsonify_keys=()):
+        for k in jsonify_keys:
+            d[k] = json.dumps(d.get(k), ensure_ascii=False)
         self._writer.writerow(d)
 
 
@@ -64,6 +65,16 @@ class PWriter:
                 yield name, v
 
 
+def sub_write(key: str, writer: MWriter, dic: dict, sub_key: str, subval_key=None):
+    if subd := dic.get(key):
+        subd_l = [subd] if isinstance(subd, dict) else subd
+        for _sd in subd_l:
+            if not isinstance(_sd, dict):
+                _sd = {subval_key: _sd}
+            _sd[sub_key] = dic["id"]
+            writer.writerow(_sd)
+
+
 class AuthorsWriter(PWriter):
     authors = MWriter(
         [
@@ -84,25 +95,14 @@ class AuthorsWriter(PWriter):
     counts_by_year = MWriter(["author_id", "year", "works_count", "cited_by_count"])
 
     def write(self, dic: dict):
-        author_id = dic["id"]
-        dic["display_name_alternatives"] = json.dumps(
-            dic.get("display_name_alternatives"), ensure_ascii=False
-        )
         dic["last_known_institution"] = (dic.get("last_known_institution") or {}).get(
             "id"
         )
-        self.authors.writerow(dic)
+        self.authors.writerow(dic, ["display_name_alternatives"])
 
-        # ids
-        if author_ids := dic.get("ids"):
-            author_ids["author_id"] = author_id
-            self.ids.writerow(author_ids)
-
-        # counts_by_year
-        if counts_by_year := dic.get("counts_by_year"):
-            for count_by_year in counts_by_year:
-                count_by_year["author_id"] = author_id
-                self.counts_by_year.writerow(count_by_year)
+        _swrite = partial(sub_write, dic=dic, sub_key="author_id")
+        _swrite("ids", self.ids)
+        _swrite("counts_by_year", self.counts_by_year)
 
 
 class ConceptsWriter(PWriter):
@@ -143,13 +143,7 @@ class ConceptsWriter(PWriter):
 
         if concept_ids := dic.get("ids"):
             concept_ids["concept_id"] = concept_id
-            concept_ids["umls_aui"] = json.dumps(
-                concept_ids.get("umls_aui"), ensure_ascii=False
-            )
-            concept_ids["umls_cui"] = json.dumps(
-                concept_ids.get("umls_cui"), ensure_ascii=False
-            )
-            self.ids.writerow(concept_ids)
+            self.ids.writerow(concept_ids, ["umls_aui", "umls_cui"])
 
         if ancestors := dic.get("ancestors"):
             for ancestor in ancestors:
@@ -161,10 +155,7 @@ class ConceptsWriter(PWriter):
                         }
                     )
 
-        if counts_by_year := dic.get("counts_by_year"):
-            for count_by_year in counts_by_year:
-                count_by_year["concept_id"] = concept_id
-                self.counts_by_year.writerow(count_by_year)
+        sub_write("counts_by_year", self.counts_by_year, dic, "concept_id")
 
         if related_concepts := dic.get("related_concepts"):
             for related_concept in related_concepts:
@@ -221,24 +212,14 @@ class InstitutionsWriter(PWriter):
 
     def write(self, dic: dict):
         institution_id = dic["id"]
-        # institutions
-        dic["display_name_acroynyms"] = json.dumps(
-            dic.get("display_name_acroynyms"), ensure_ascii=False
+        self.institutions.writerow(
+            dic, ["display_name_acroynyms", "display_name_alternatives"]
         )
-        dic["display_name_alternatives"] = json.dumps(
-            dic.get("display_name_alternatives"), ensure_ascii=False
-        )
-        self.institutions.writerow(dic)
 
-        # ids
-        if institution_ids := dic.get("ids"):
-            institution_ids["institution_id"] = institution_id
-            self.ids.writerow(institution_ids)
-
-        # geo
-        if institution_geo := dic.get("geo"):
-            institution_geo["institution_id"] = institution_id
-            self.geo.writerow(institution_geo)
+        _swrite = partial(sub_write, dic=dic, sub_key="institution_id")
+        _swrite("ids", self.ids)
+        _swrite("geo", self.geo)
+        _swrite("counts_by_year", self.counts_by_year)
 
         # associated_institutions
         if associated_institutions := dic.get(
@@ -254,12 +235,6 @@ class InstitutionsWriter(PWriter):
                             "relationship": associated_institution.get("relationship"),
                         }
                     )
-
-        # counts_by_year
-        if counts_by_year := dic.get("counts_by_year"):
-            for count_by_year in counts_by_year:
-                count_by_year["institution_id"] = institution_id
-                self.counts_by_year.writerow(count_by_year)
 
 
 class PublishersWriter(PWriter):
@@ -281,21 +256,10 @@ class PublishersWriter(PWriter):
     ids = MWriter(["publisher_id", "openalex", "ror", "wikidata"])
 
     def write(self, dic: dict):
-        publisher_id = dic["id"]
-        dic["alternate_titles"] = json.dumps(
-            dic.get("alternate_titles"), ensure_ascii=False
-        )
-        dic["country_codes"] = json.dumps(dic.get("country_codes"), ensure_ascii=False)
-        self.publishers.writerow(dic)
-
-        if publisher_ids := dic.get("ids"):
-            publisher_ids["publisher_id"] = publisher_id
-            self.ids.writerow(publisher_ids)
-
-        if counts_by_year := dic.get("counts_by_year"):
-            for count_by_year in counts_by_year:
-                count_by_year["publisher_id"] = publisher_id
-                self.counts_by_year.writerow(count_by_year)
+        self.publishers.writerow(dic, ["alternate_titles", "country_codes"])
+        _swrite = partial(sub_write, dic=dic, sub_key="publisher_id")
+        _swrite("ids", self.ids)
+        _swrite("counts_by_year", self.counts_by_year)
 
 
 class SourcesWriter(PWriter):
@@ -322,18 +286,13 @@ class SourcesWriter(PWriter):
 
     def write(self, dic: dict):
         source_id = dic["id"]
-        dic["issn"] = json.dumps(dic.get("issn"))
-        self.sources.writerow(dic)
+        self.sources.writerow(dic, ["issn"])
 
         if source_ids := dic.get("ids"):
             source_ids["source_id"] = source_id
-            source_ids["issn"] = json.dumps(source_ids.get("issn"))
-            self.ids.writerow(source_ids)
+            self.ids.writerow(source_ids, ["issn"])
 
-        if counts_by_year := dic.get("counts_by_year"):
-            for count_by_year in counts_by_year:
-                count_by_year["source_id"] = source_id
-                self.counts_by_year.writerow(count_by_year)
+        sub_write("counts_by_year", self.counts_by_year, dic, "source_id")
 
 
 class WorksWriter(PWriter):
@@ -393,11 +352,7 @@ class WorksWriter(PWriter):
 
     def write(self, dic: dict):
         work_id = dic["id"]
-
-        if (abstract := dic.get("abstract_inverted_index")) is not None:
-            dic["abstract_inverted_index"] = json.dumps(abstract, ensure_ascii=False)
-
-        self.works.writerow(dic)
+        self.works.writerow(dic, ["abstract_inverted_index"])
 
         # locations
         locations: list = dic.get("locations") or []
@@ -436,13 +391,18 @@ class WorksWriter(PWriter):
                             }
                         )
 
-        # biblio
-        if biblio := dic.get("biblio"):
-            biblio["work_id"] = work_id
-            self.biblio.writerow(biblio)
+        _swrite = partial(sub_write, dic=dic, sub_key="work_id")
+        _swrite("biblio", self.biblio)
+        _swrite("ids", self.ids)
+        _swrite("mesh", self.mesh)
+        _swrite("open_access", self.open_access)
+        _swrite(
+            "referenced_works", self.referenced_works, subval_key="referenced_work_id"
+        )
+        _swrite("related_works", self.related_works, subval_key="related_work_id")
 
         # concepts
-        for concept in dic.get("concepts"):
+        for concept in dic.get("concepts", []):
             if concept_id := concept.get("id"):
                 self.concepts.writerow(
                     {
@@ -451,36 +411,6 @@ class WorksWriter(PWriter):
                         "score": concept.get("score"),
                     }
                 )
-
-        # ids
-        if ids := dic.get("ids"):
-            ids["work_id"] = work_id
-            self.ids.writerow(ids)
-
-        # mesh
-        for mesh in dic.get("mesh"):
-            mesh["work_id"] = work_id
-            self.mesh.writerow(mesh)
-
-        # open_access
-        if open_access := dic.get("open_access"):
-            open_access["work_id"] = work_id
-            self.open_access.writerow(open_access)
-
-        # referenced_works
-        for referenced_work in dic.get("referenced_works", []):
-            if referenced_work:
-                self.referenced_works.writerow(
-                    {"work_id": work_id, "referenced_work_id": referenced_work}
-                )
-
-        # related_works
-        for related_work in dic.get("related_works", []):
-            if related_work:
-                self.related_works.writerow(
-                    {"work_id": work_id, "related_work_id": related_work}
-                )
-
         return super().write(dic)
 
 
